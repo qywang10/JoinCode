@@ -38,6 +38,7 @@
 #include <limits.h> /* INT_MAX */
 #include <unistd.h> /* sysconf */
 #include <unordered_map>
+#include "paraforans.cpp"
 #define BARRIER_ARRIVE(B, RV)                           \
     RV = pthread_barrier_wait(B);                       \
     if (RV != 0 && RV != PTHREAD_BARRIER_SERIAL_THREAD) \
@@ -45,6 +46,8 @@
         printf("Couldn't wait on barrier\n");           \
         exit(EXIT_FAILURE);                             \
     }
+
+bool help_flag=false;    
 void parse_args(int argc, char **argv, param_join_t *cmd_params)
 {
 
@@ -56,6 +59,7 @@ void parse_args(int argc, char **argv, param_join_t *cmd_params)
                 /* These options set a flag. */
 
                 {"help", no_argument, 0, 'h'},
+                // {"help", required_argument, 0, 'h'},
                 /* These options don't set a flag.
                    We distinguish them by their indices. */
                 {"nthreads", required_argument, 0, 'n'},
@@ -64,12 +68,12 @@ void parse_args(int argc, char **argv, param_join_t *cmd_params)
                 {"numa_partition", required_argument, 0, 'p'},
                 {"test_bandwidth", required_argument, 0, 't'},
                 {"col_num", required_argument, 0, 'c'},
-                {0, 0, 0, 0}
-            };
+                {"cachetest", required_argument, 0, 'l'},
+                {0, 0, 0, 0}};
         /* getopt_long stores the option index here. */
         int option_index = 0;
 
-        c = getopt_long(argc, argv, "n:s:r:p:t:c",
+        c = getopt_long(argc, argv, "h:n:s:r:p:t:c:l",
                         long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -88,6 +92,10 @@ void parse_args(int argc, char **argv, param_join_t *cmd_params)
             break;
 
         case 'h':
+            printf("\parameter:\n \t1.numa_partition: for numa test\n \t2.test_bandwidth: for bandwidth test\n \t3.cachetest: for cache test\te.g.:1 2 3\n");
+            // cmd_params->help = atoi(optarg);
+            help_flag=true;
+            break;
         case 'n':
             cmd_params->nthreads = atoi(optarg);
             break;
@@ -105,6 +113,9 @@ void parse_args(int argc, char **argv, param_join_t *cmd_params)
             break;
         case 'c':
             cmd_params->col_num = atoi(optarg);
+            break;
+        case 'l':
+            cmd_params->cachetest = atoi(optarg);
             break;
         default:
             break;
@@ -308,7 +319,7 @@ TESTBANDWIDTH_thread(void *param)
     struct timeval start, end;
     int rv;
     arg_vec *args = (arg_vec *)param;
-    BARRIER_ARRIVE(args->barrier, rv);
+    BARRIER_ARRIVE(args->barrier, rv);   // TODO 仿照加同步
     if (args->tid == 0)
         gettimeofday(&start, NULL);
 
@@ -328,6 +339,9 @@ VECTORJOIN_thread(void *param)
 {
     int rv;
     arg_vec *args = (arg_vec *)param;
+
+    BARRIER_ARRIVE(args->barrier,rv);  //wqy
+
     if (!args->R_tuples_euql_1)
     {
 
@@ -346,10 +360,12 @@ VECTORJOIN_thread(void *param)
 double *VECTORJOIN(int32_t *R_key, int32_t *R_payload, int32_t *S_key, int32_t *S_payload, uint64_t R_num_tuples, uint64_t S_num_tuples)
 {
     timeval start1, end1;
+    timeval buildp_start,buildp_end;
     clock_t start, end;
     int nthreads = sysconf(_SC_NPROCESSORS_ONLN);
     int32_t numR, numS, numRthr, numSthr;
     int i, rv, j;
+    float sum_p_create;
     cpu_set_t set;
     arg_vec args[nthreads];
     pthread_t tid[nthreads];
@@ -401,13 +417,23 @@ double *VECTORJOIN(int32_t *R_key, int32_t *R_payload, int32_t *S_key, int32_t *
 
         args[i].results = 0;
 
-        rv = pthread_create(&tid[i], &attr, VECTORJOIN_thread, (void *)&args[i]);
+        // ToDo start_time
+        gettimeofday(&buildp_start,NULL);
+        rv = pthread_create(&tid[i], &attr, VECTORJOIN_thread, (void *)&args[i]);    // 初始化时间
+        // ToDo end_time
+        gettimeofday(&buildp_end,NULL);
+        // printf("build pthread time:\t");
+        sum_p_create=((double)1000000 * (buildp_end.tv_sec - buildp_start.tv_sec) + buildp_end.tv_usec - buildp_start.tv_usec) / 1000;
+        // printf("%lf\n",((double)1000000 * (buildp_end.tv_sec - buildp_start.tv_sec) + buildp_end.tv_usec - buildp_start.tv_usec) / 1000000);    // 单位：s
+
         if (rv)
         {
             printf("ERROR; return code from pthread_create() is %d\n", rv);
             exit(-1);
         }
     }
+    printf("build pthread time:\t");
+    printf("%lf\ts\n",sum_p_create);
     uint64_t result = 0;
     for (i = 0; i < nthreads; i++)
     {
@@ -420,8 +446,9 @@ double *VECTORJOIN(int32_t *R_key, int32_t *R_payload, int32_t *S_key, int32_t *
     double *run_time;
     run_time = new double[2];
     run_time[1] = end - start;
-    run_time[0] = ((double)1000000 * (end1.tv_sec - start1.tv_sec) + end1.tv_usec - start1.tv_usec) / 1000000;
+    run_time[0] = ((double)1000000 * (end1.tv_sec - start1.tv_sec) + end1.tv_usec - start1.tv_usec) / 1000000 - sum_p_create/1000;
     // std::cout << "VECTORJOIN: " << run_time2 << " ms" << std::endl;
+    // std::cout << result << std::endl;
     std::cout << "result = "<< result << std::endl;
     return run_time;
 }
@@ -468,7 +495,9 @@ double *VECTORJOIN_numa(int32_t *R_key, int32_t *R_payload, int32_t **S_key, int
         exit(EXIT_FAILURE);
     }
     pthread_attr_init(&attr);
-    int num_nthreads[numa_regions] = {0};
+    // int num_nthreads[numa_regions] = {0};
+    int num_nthreads[numa_regions];
+    memset(num_nthreads,0,sizeof(numa_regions*4));
     start = clock();
     gettimeofday(&start1, NULL);
     for (i = 0; i < nthreads; i++)
@@ -523,7 +552,7 @@ double *VECTORJOIN_numa(int32_t *R_key, int32_t *R_payload, int32_t **S_key, int
     run_time[0] = ((double)1000000 * (end1.tv_sec - start1.tv_sec) + end1.tv_usec - start1.tv_usec) / 1000000;
     // double run_time5 = end - start;
     // fprintf(fp, "%lld\t%lld\t%lf\n", R_num_tuples, S_num_tuples, run_time5);
-    std::cout << result << std::endl;
+    std::cout << "result = " << result << std::endl;
     return run_time;
 }
 double *Test_Bandwidth(int32_t **S_key, uint64_t num_tuples, int8_t col_num)
@@ -671,7 +700,9 @@ double Test_Bandwidth_Numa(int32_t *S_key[][10], uint64_t *S_num_tuples, int col
     }
     pthread_attr_init(&attr);
     gettimeofday(&start, NULL);
-    int num_nthreads[numa_regions] = {0};
+    // int num_nthreads[numa_regions] = {0};
+    int num_nthreads[numa_regions];
+    memset(num_nthreads,0,sizeof(numa_regions*4));
     for (i = 0; i < nthreads; i++)
     {
         int cpu_idx = i;
@@ -759,25 +790,54 @@ double Test_Bandwidth_Numa(int32_t *S_key[][10], uint64_t *S_num_tuples, int col
 }
 int main(int argc, char **argv)
 {
-
     int nthreads = 32;
     unsigned long long s_size = pow(2, 30);
+    // unsigned long long s_size = pow(2, 10);
     unsigned long long r_size = 32;
 
+    FILE *fpans = fopen("./test_vecjoin_cpu_xlsx.txt", "w");    // cpu连接测试xlsx格式
+    fprintf(fpans, "%s\t%s\t%s\t%s\t%s\t%s\n", "R_size", "s_size", "CPU", "NUMA", "Metric", "Values");
+
+    string cpumodel;
+    #if defined __x86_64__
+        cpumodel=getCpuInfo();
+    #elif defined __aarch64__
+        cpumodel="NULL";
+    #endif
+
+    string numastat;
+
+    string metricstat;
+
     int numa_regions = eth_hashjoin::get_num_numa_regions();
-    // std::cout<< numa_regions << std::endl;
+
+    // to change the parameter
     param_join_t cmd_params;
     cmd_params.nthreads = 32;
     cmd_params.s_size = pow(2, 30);
+    // cmd_params.s_size = pow(2, 10);
     cmd_params.r_size = 32;
+    // cmd_params.r_size = 8;
+
     cmd_params.numa_partition = 0;
-    cmd_params.test_bandwidth = 0;
+    cmd_params.test_bandwidth = 0;  // 测试带宽 --test_bandwidth=1
     cmd_params.col_num = 10;
     parse_args(argc, argv, &cmd_params);
-    if (!cmd_params.test_bandwidth && !cmd_params.numa_partition)
+
+    // printf("help val=%d\n\n",cmd_params.help);
+    if(help_flag){
+        // printf("*********************\n");
+        return 0;
+    }
+
+    if (!cmd_params.test_bandwidth && !cmd_params.numa_partition && !cmd_params.cachetest)
     {
+        printf("IN NO_BANDWIDTH & NO_NUMA\n");
         FILE *fp = fopen("./test_vecjoin_cpu.txt", "w");
-        fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%s\n", "R_size", "s_size", "time(s)", "tuples/s", "CPU Clock", "tuple/CPU Clock");
+        fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%s\n", "R_size", "s_size", "time(s)", "tuples/s", "CPU_Clock", "tuple/CPU Clock");
+        
+        numastat="NUMA-oblivious";    // NUMA-conscious
+
         for (int i = 0; i <= 30; i++)
         {
             double run_time[5] = {0.0};
@@ -806,6 +866,7 @@ int main(int argc, char **argv)
             std::cout << "Generating S table data: " << cmd_params.s_size << " rows" << std::endl;
             int max_cores = sysconf(_SC_NPROCESSORS_ONLN);
             gen_data(cmd_params.s_size, cmd_params.r_size, S, max_cores);
+            // for (int j = 0; j < 5; j++)
             for (int j = 0; j < 5; j++)
             {
                 double *run_time_tmp = VECTORJOIN(R->key, R->payload, S->key, S->payload, cmd_params.r_size, S->num_tuples[0]);
@@ -813,16 +874,43 @@ int main(int argc, char **argv)
                 run_time[j] = run_time_tmp[0];
             }
 
+            delete[] S->key;
+            delete[] S->payload;
+            delete[] S->num_tuples;
+            delete[] R->key;
+            delete[] R->payload;
+            delete[] R->num_tuples;
+            delete S;
+            delete R;
             // std::cout << "Run time: " << run_time[j] / CLOCKS_PER_SEC << " seconds" << std::endl;
             double min_run_time = *std::min_element(run_time, run_time + 5);
             double min_run_clock = *std::min_element(run_clock, run_clock + 5);
-            fprintf(fp, "%lld\t%lld\t%lf\t%lf\t%lf\t%lf\n", cmd_params.r_size, s_size, min_run_time, 1 / min_run_time, min_run_clock, min_run_clock / s_size);
+
+            metricstat="Times(ms)";    // 不包括线程创建时间
+            fprintf(fpans,"%d\t%lld\t%s\t%s\t%s\t%lf\n",i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_time*1000);
+            metricstat="Throughput(GT/s)";
+            fprintf(fpans,"%d\t%d\t%s\t%s\t%s\t%lf\n",i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), 1 / min_run_time);
+            metricstat="Cycles/Tuple";
+            fprintf(fpans,"%d\t%lld\t%s\t%s\t%s\t%lf\n",i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_clock / s_size);
+
+            /*
+            * Metric:
+            *   Throughput(GT/s):tuple/time(GT/s)
+            *   Cycles/Tuple:CPU_clock/tuple
+            *
+            * 注：这里的
+            *   tuple 单位为GT
+            *   time 单位为s
+            */
+            fprintf(fp, "%d\t%lld\t%lf\t%lf\t%lf\t%lf\n", cmd_params.r_size, s_size, min_run_time, 1 / min_run_time, min_run_clock, min_run_clock / s_size);
+            //R_size    s_size  time(s) tuples/s    CPU Clock   tuple/CPU Clock
             if (i == 0)
                 i += 4;
         }
     }
-    if (cmd_params.test_bandwidth && !cmd_params.numa_partition)
+    if (cmd_params.test_bandwidth && !cmd_params.numa_partition  && !cmd_params.cachetest)
     {
+        printf("IN BANDWIDTH & NO_NUMA\n");
         FILE *fp = fopen("./test_bandwidth_cpu.txt", "w");
         fprintf(fp, "%s\t%s\t%s\t%s\t%s\n", "col_num", "s_size", "time(s)", "tuples/s", "bandwidth(GB/ms)");
         double run_time[5] = {0.0};
@@ -858,19 +946,24 @@ int main(int argc, char **argv)
         }
         double max_bandwidth = 0.0;
         int best_colnum = 0;
-        for (int j = 0; j < cmd_params.col_num; j++)
+        for (int j = 1; j <= cmd_params.col_num; j++)
             if (max_bandwidth < bandwidth[j])
             {
                 max_bandwidth = bandwidth[j];
                 best_colnum = j;
             }
 
-        fprintf(fp, "%lld\t%lld\t%lf\t%lf\t%lf\n", best_colnum, s_size, (double)best_colnum * 4 / max_bandwidth, max_bandwidth / (best_colnum * 4), max_bandwidth);
+        fprintf(fp, "%lld\t%d\t%lf\t%lf\t%lf\n", best_colnum, s_size, (double)best_colnum * 4 / max_bandwidth, max_bandwidth / (best_colnum * 4), max_bandwidth);
     }
-    if (!cmd_params.test_bandwidth && cmd_params.numa_partition)
+    if (!cmd_params.test_bandwidth && cmd_params.numa_partition  && !cmd_params.cachetest)
     {
+        printf("IN NO_BANDWIDTH & NUMA\n");
         FILE *fp = fopen("./test_vecjoin_numa_cpu.txt", "w");
         fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%s\n", "R_size", "s_size", "time(s)", "tuples/s", "CPU Clock", "CPU Clock /CPU Clock");
+        FILE *fpans_numa = fopen("./test_vecjoin_cpu_numa_xlsx.txt", "w");    // cpu连接测试xlsx格式
+        fprintf(fpans_numa, "%s\t%s\t%s\t%s\t%s\t%s\n", "R_size", "s_size", "CPU", "NUMA", "Metric", "Values");
+        numastat="NUMA-conscious";    // NUMA-conscious
+
         double run_time[5] = {0.0};
         double run_clock[5] = {0.0};
         for (int i = 0; i <= 30; i++)
@@ -912,7 +1005,7 @@ int main(int argc, char **argv)
             // int32_t *S_key_numa[numa_regions];
             // int32_t *S_payload_numa[numa_regions];
 
-            // std::cout << num_numa[0] << " " << num_numa[1] << std::endl;
+            std::cout << num_numa[0] << " " << num_numa[1] << std::endl;
             for (int j = 0; j < 5; j++)
             {
                 double *run_time_tmp = VECTORJOIN_numa(R->key, R->payload, S->key, S->payload, cmd_params.r_size, num_numa);
@@ -920,15 +1013,42 @@ int main(int argc, char **argv)
                 run_time[j] = run_time_tmp[0];
             }
 
+            for (int j = 0; j < numa_regions; j++)
+            {
+                // eth_hashjoin::bind_numa(j);
+                numa_free(S->key[j],num_numa[j] * sizeof(int));
+                numa_free(S->payload[j],num_numa[j] * sizeof(int));
+                // S->key[j] = (int *)numa_alloc_onnode(num_numa[j] * sizeof(int), j);
+                // S->payload[j] = (int *)numa_alloc_onnode(num_numa[j] * sizeof(int), j);
+            }
+            // delete[] S->key;
+            // delete[] S->payload;
+            // delete[] S->num_tuples;
+            delete[] R->key;
+            delete[] R->payload;
+            delete[] R->num_tuples;
+            delete S;
+            delete R;
+
             double min_run_time = *std::min_element(run_time, run_time + 5);
             double min_run_clock = *std::min_element(run_clock, run_clock + 5);
-            fprintf(fp, "%lld\t%lld\t%lf\t%lf\t%lf\t%lf\n", cmd_params.r_size, s_size, min_run_time, 1 / min_run_time, min_run_clock, min_run_clock / s_size);
+
+            
+            metricstat="Times(ms)";
+            fprintf(fpans_numa,"%d\t%d\t%s\t%s\t%s\t%lf\n",i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_time*1000);
+            metricstat="Throughput(GT/s)";
+            fprintf(fpans_numa,"%d\t%d\t%s\t%s\t%s\t%lf\n",i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), 1 / min_run_time);
+            metricstat="Cycles/Tuple";
+            fprintf(fpans_numa,"%d\t%d\t%s\t%s\t%s\t%lf\n",i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_clock / s_size);
+
+            fprintf(fp, "%d\t%d\t%lf\t%lf\t%lf\t%lf\n", cmd_params.r_size, s_size, min_run_time, 1 / min_run_time, min_run_clock, min_run_clock / s_size);
             if (i == 0)
                 i += 4;
         }
     }
-    if (cmd_params.test_bandwidth && cmd_params.numa_partition)
+    if (cmd_params.test_bandwidth && cmd_params.numa_partition  && !cmd_params.cachetest)
     {
+        printf("IN BANDWIDTH & NUMA\n");
         FILE *fp = fopen("./test_bandwidth_numa_cpu.txt", "w");
         fprintf(fp, "%s\t%s\t%s\t%s\t%s\n", "col_num", "s_size", "time(s)", "tuples/s", "bandwidth(GB/s)");
         double run_time[5] = {0.0};
@@ -974,7 +1094,7 @@ int main(int argc, char **argv)
         }
         double max_bandwidth = 0.0;
         int best_colnum = 0;
-        for (int j = 0; j < cmd_params.col_num; j++)
+        for (int j = 1; j <= cmd_params.col_num; j++)
             if (max_bandwidth < bandwidth[j])
             {
                 max_bandwidth = bandwidth[j];
@@ -983,117 +1103,217 @@ int main(int argc, char **argv)
 
         fprintf(fp, "%lld\t%lld\t%lf\t%lf\t%lf\n", best_colnum, s_size, (double)best_colnum * 4 / max_bandwidth, max_bandwidth / (best_colnum * 4), max_bandwidth);
     }
-    //
-    // if (!cmd_params.numa_partition)
-    // {
-    //     FILE *fp = fopen("./test_vecjoin_cpu.txt", "w");
-    //     fprintf(fp, "%s\t%s\t%s\n", "R_size", "s_size", "time");
-    //     for (int i = 5; i <= 5; i++)
-    //     {
-    //         cmd_params.r_size = pow(2, i);
-    //         relation_t *R, *S;
-    //         R = new relation_t;
-    //         R->key = new int32_t[cmd_params.r_size];
-    //         R->payload = new int32_t[cmd_params.r_size];
-    //         R->num_tuples = new uint64_t[1];
-    //         *(R->num_tuples) = cmd_params.r_size;
 
-    //         S = new relation_t;
-    //         S->key = new int32_t[s_size];
-    //         S->payload = new int32_t[s_size];
-    //         S->num_tuples = new uint64_t[1];
-    //         *(S->num_tuples) = cmd_params.s_size;
+    if(cmd_params.cachetest){
+        // get cache size
+        int l1dsize,l2size,l3size;
+        l1dsize=getCacheInfo(0)*1024/16;    // 恰好装满l1 cache时需要多少row
+        l2size=getCacheInfo(2)*1024/16;    // 恰好装满l2 cache时需要多少row
+        l3size=getCacheInfo(3)*1024/16;    // 恰好装满l3 cache时需要多少row
 
-    //         std::cout << "Testing in progress: vectorjoin with the rows of table S: " << cmd_params.s_size << " and the table of R: " << cmd_params.r_size << std::endl;
-    //         std::cout << "Generating R table data: " << cmd_params.r_size << " rows" << std::endl;
-    //         gen_data(cmd_params.r_size, cmd_params.r_size, R, cmd_params.nthreads);
-    //         std::cout << "Generating S table data: " << cmd_params.s_size << " rows" << std::endl;
-    //         gen_data(cmd_params.s_size, cmd_params.r_size, S, cmd_params.nthreads);
-    //         VECTORJOIN(R->key, R->payload, S->key, S->payload, 0, S->num_tuples[0], fp);
-    //     }
-    // }
-    // else
-    // {
-    //     FILE *fp = fopen("./test_vecjoin_numa_cpu.txt", "w");
-    //     fprintf(fp, "%s\t%s\t%s\n", "R_size", "s_size", "time");
-    //     for (int i = 5; i <= 5; i++)
-    //     {
-    //         cmd_params.r_size = pow(2, i);
-    //         relation_t *R;
-    //         relation_numa_t *S;
-    //         R = new relation_t;
-    //         R->key = new int32_t[cmd_params.r_size];
-    //         R->payload = new int32_t[cmd_params.r_size];
-    //         R->num_tuples = new uint64_t[1];
-    //         *(R->num_tuples) = cmd_params.r_size;
+        // get r rows
+        // int r_l1_size=l1dsize/16;    // 100%
+        int r_l1_size,r_l2_size,r_l3_size;    // 100%
 
-    //         S = new relation_numa_t;
+        char *cache_file_name=NULL;
+        cache_file_name=(char*)malloc(40*sizeof(char));
+        sprintf(cache_file_name,"./test_vecjoin_cpu_cache_test_l%d.txt",cmd_params.cachetest);
 
-    //         uint64_t num_numa[numa_regions];
-    //         int num_size_per_numa = s_size / numa_regions;
-    //         for (int j = 0; j < numa_regions; j++)
-    //             num_numa[j] = (j == numa_regions - 1) ? s_size - num_size_per_numa * (numa_regions - 1) : num_size_per_numa;
-    //         // std::cout << num_numa[0] << std::endl;
-    //         for (int j = 0; j < numa_regions; j++)
-    //         {
-    //             eth_hashjoin::bind_numa(j);
-    //             S->key[j] = (int *)numa_alloc_onnode(num_numa[j] * sizeof(int), j);
-    //             S->payload[j] = (int *)numa_alloc_onnode(num_numa[j] * sizeof(int), j);
-    //         }
+        FILE *fpcache = fopen(cache_file_name, "w");   // cache_size_test 连接测试xlsx格式
+        fprintf(fpcache, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", "R_size", "s_size", "CPU", "NUMA", "Metric", "Values","Cache");
 
-    //         std::cout << "Testing in progress: vectorjoin with the rows of table S: " << cmd_params.s_size << " and the table of R: " << cmd_params.r_size << std::endl;
-    //         std::cout << "Generating R table data: " << cmd_params.r_size << " rows" << std::endl;
-    //         gen_data(cmd_params.r_size, cmd_params.r_size, R, cmd_params.nthreads);
-    //         std::cout << "Generating S table data: " << cmd_params.s_size << " rows" << std::endl;
-    //         int max_cores = sysconf(_SC_NPROCESSORS_ONLN);
-    //         gen_data_numa(num_numa, cmd_params.r_size, S, max_cores);
+        numastat="NUMA-oblivious";    // NUMA-conscious
+        /*---------- get L1 Cache test ----------*/
+        if(cmd_params.cachetest==1){
+            cout<<"L1 cache test start\n";
+            for (int i = 1; i <= 25; i++)    // 10:100%
+            {
+                r_l1_size=l1dsize*i/10;
+                // cout<<"r_rows="<<r_l1_size<<endl;
+                double run_time[5] = {0.0};
+                double run_clock[5] = {0.0};
+                // cmd_params.r_size = pow(2, i);
+                relation_t *R, *S;
+                R = new relation_t;
+                R->key = new int32_t[r_l1_size];
+                R->payload = new int32_t[r_l1_size];
+                R->num_tuples = new uint64_t[1];
+                *(R->num_tuples) = r_l1_size;
 
-    //         // int32_t *S_key_numa[numa_regions];
-    //         // int32_t *S_payload_numa[numa_regions];
+                S = new relation_t;
+                S->key = new int32_t[cmd_params.s_size];
+                S->payload = new int32_t[cmd_params.s_size];
+                S->num_tuples = new uint64_t[1];
+                *(S->num_tuples) = cmd_params.s_size;
 
-    //         // std::cout << num_numa[0] << " " << num_numa[1] << std::endl;
+                std::cout << "Testing in progress: vectorjoin with the rows of table S: " << cmd_params.s_size << " and the table of R: " << r_l1_size << std::endl;
+                if (i != 0)
+                {
+                    std::cout << "Generating R table data: " << r_l1_size << " rows" << std::endl;
+                    gen_data(r_l1_size, r_l1_size, R, cmd_params.nthreads);
+                }
 
-    //         VECTORJOIN_numa(R->key, R->payload, S->key, S->payload, 0, num_numa, fp);
-    //     }
-    // }
-    // for (int i = 5; i <= 30; i++)
-    // {
-    //     r_size = pow(2,i);
-    //     R = new relation_t;
-    //     R->key = new int32_t[r_size];
-    //     R->payload = new int32_t[s_size];
-    //     R->num_tuples = new uint64_t[1];
-    //     *(R->num_tuples) = r_size;
+                std::cout << "Generating S table data: " << cmd_params.s_size << " rows" << std::endl;
+                int max_cores = sysconf(_SC_NPROCESSORS_ONLN);
+                gen_data(cmd_params.s_size, r_l1_size, S, max_cores);
+                // for (int j = 0; j < 5; j++)
+                for (int j = 0; j < 5; j++)
+                {
+                    double *run_time_tmp = VECTORJOIN(R->key, R->payload, S->key, S->payload, r_l1_size, S->num_tuples[0]);
+                    run_clock[j] = run_time_tmp[1];
+                    run_time[j] = run_time_tmp[0];
+                }
 
-    //     S = new relation_t;
-    //     S->key = new int32_t[s_size];
-    //     S->payload = new int32_t[s_size];
-    //     S->num_tuples = new uint64_t[1];
-    //     *(S->num_tuples) = s_size;
+                delete[] S->key;
+                delete[] S->payload;
+                delete[] S->num_tuples;
+                delete[] R->key;
+                delete[] R->payload;
+                delete[] R->num_tuples;
+                delete S;
+                delete R;
 
-    // }
-    // uint64_t num_numa[numa_regions];
-    // int num_size_per_numa = s_size / numa_regions;
-    // for (int j = 0; j < numa_regions; j++)
-    //     num_numa[j] = (j == numa_regions - 1) ? s_size - num_size_per_numa * (numa_regions - 1) : num_size_per_numa;
-    // int32_t *S_key[numa_regions];
-    // int32_t *S_payload[numa_regions];
-    // int32_t *S_key1[numa_regions];
+                // std::cout << "Run time: " << run_time[j] / CLOCKS_PER_SEC << " seconds" << std::endl;
+                double min_run_time = *std::min_element(run_time, run_time + 5);
+                double min_run_clock = *std::min_element(run_clock, run_clock + 5);
+                // 下面可要
+                float cachetimes=i*1.0/10;
+                metricstat="Times(ms)";
+                fprintf(fpcache,"%f\t%lld\t%s\t%s\t%s\t%lf\t%s\n",cachetimes, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_time*1000,"L1");
+                metricstat="Throughput(GT/s)";
+                fprintf(fpcache,"%lf\t%d\t%s\t%s\t%s\t%lf\t%s\n",cachetimes, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), 1 / min_run_time,"L1");
+                metricstat="Cycles/Tuple";
+                fprintf(fpcache,"%lf\t%lld\t%s\t%s\t%s\t%lf\t%s\n",cachetimes, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_clock / s_size,"L1");
+            }
+            fclose(fpcache);
+        }
+        else if(cmd_params.cachetest==2){
+            cout<<"L2 cache test start\n";
+            for (int i = 1; i <= 25; i++)    // 10:100%
+            {
+                r_l2_size=l2size*i/10;
+                // cout<<"r_rows="<<r_l2_size<<endl;
+                double run_time[5] = {0.0};
+                double run_clock[5] = {0.0};
+                // cmd_params.r_size = pow(2, i);
+                relation_t *R, *S;
+                R = new relation_t;
+                R->key = new int32_t[r_l2_size];
+                R->payload = new int32_t[r_l2_size];
+                R->num_tuples = new uint64_t[1];
+                *(R->num_tuples) = r_l2_size;
 
-    // for (int j = 0; j < numa_regions; j++)
-    // {
-    //     eth_hashjoin::bind_numa(j);
-    //     S_key[j] = (int *)numa_alloc_onnode(num_numa[j] * sizeof(int), j);
-    //     S_payload[j] = (int *)numa_alloc_onnode(num_numa[j] * sizeof(int), j);
-    //     S_key1[j] = (int *)numa_alloc_onnode(num_numa[j] * sizeof(int), j);
-    //     for (uint64_t i = 0; i < num_numa[j]; i++)
-    //     {
-    //         S_key[j][i] = 1;
-    //         S_payload[j][i] = 1;
-    //         S_key1[j][i] = 1;
-    //     }
-    // }
-    // test_bandwidth(S_key, S_payload, S_key1, num_numa, fp);
+                S = new relation_t;
+                S->key = new int32_t[cmd_params.s_size];
+                S->payload = new int32_t[cmd_params.s_size];
+                S->num_tuples = new uint64_t[1];
+                *(S->num_tuples) = cmd_params.s_size;
 
+                std::cout << "Testing in progress: vectorjoin with the rows of table S: " << cmd_params.s_size << " and the table of R: " << r_l2_size << std::endl;
+                if (i != 0)
+                {
+                    std::cout << "Generating R table data: " << r_l2_size << " rows" << std::endl;
+                    gen_data(r_l2_size, r_l2_size, R, cmd_params.nthreads);
+                }
+
+                std::cout << "Generating S table data: " << cmd_params.s_size << " rows" << std::endl;
+                int max_cores = sysconf(_SC_NPROCESSORS_ONLN);
+                gen_data(cmd_params.s_size, r_l2_size, S, max_cores);
+                // for (int j = 0; j < 5; j++)
+                for (int j = 0; j < 5; j++)
+                {
+                    double *run_time_tmp = VECTORJOIN(R->key, R->payload, S->key, S->payload, r_l2_size, S->num_tuples[0]);
+                    run_clock[j] = run_time_tmp[1];
+                    run_time[j] = run_time_tmp[0];
+                }
+
+                delete[] S->key;
+                delete[] S->payload;
+                delete[] S->num_tuples;
+                delete[] R->key;
+                delete[] R->payload;
+                delete[] R->num_tuples;
+                delete S;
+                delete R;
+
+                // std::cout << "Run time: " << run_time[j] / CLOCKS_PER_SEC << " seconds" << std::endl;
+                double min_run_time = *std::min_element(run_time, run_time + 5);
+                double min_run_clock = *std::min_element(run_clock, run_clock + 5);
+
+                // 下面可要
+                float cachetimes=i*1.0/10;
+                metricstat="Times(ms)";
+                fprintf(fpcache,"%lf\t%lld\t%s\t%s\t%s\t%lf\t%s\n",cachetimes, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_time*1000,"L2");
+                metricstat="Throughput(GT/s)";
+                fprintf(fpcache,"%lf\t%d\t%s\t%s\t%s\t%lf\t%s\n",cachetimes, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), 1 / min_run_time,"L2");
+                metricstat="Cycles/Tuple";
+                fprintf(fpcache,"%lf\t%lld\t%s\t%s\t%s\t%lf\t%s\n",cachetimes, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(),min_run_clock / s_size,"L2");
+            }
+        }
+        else{
+            cout<<"L3 cache test start\n";
+            for (int i = 1; i <= 25; i++)    // 10:100%
+            {
+                r_l3_size=l3size*i/10;
+                // cout<<"r_rows="<<r_l3_size<<endl;
+                double run_time[5] = {0.0};
+                double run_clock[5] = {0.0};
+                // cmd_params.r_size = pow(2, i);
+                relation_t *R, *S;
+                R = new relation_t;
+                R->key = new int32_t[r_l3_size];
+                R->payload = new int32_t[r_l3_size];
+                R->num_tuples = new uint64_t[1];
+                *(R->num_tuples) = r_l3_size;
+
+                S = new relation_t;
+                S->key = new int32_t[cmd_params.s_size];
+                S->payload = new int32_t[cmd_params.s_size];
+                S->num_tuples = new uint64_t[1];
+                *(S->num_tuples) = cmd_params.s_size;
+
+                std::cout << "Testing in progress: vectorjoin with the rows of table S: " << cmd_params.s_size << " and the table of R: " << r_l3_size << std::endl;
+                if (i != 0)
+                {
+                    std::cout << "Generating R table data: " << r_l3_size << " rows" << std::endl;
+                    gen_data(r_l3_size, r_l3_size, R, cmd_params.nthreads);
+                }
+
+                std::cout << "Generating S table data: " << cmd_params.s_size << " rows" << std::endl;
+                int max_cores = sysconf(_SC_NPROCESSORS_ONLN);
+                gen_data(cmd_params.s_size, r_l3_size, S, max_cores);
+                // for (int j = 0; j < 5; j++)
+                for (int j = 0; j < 5; j++)
+                {
+                    double *run_time_tmp = VECTORJOIN(R->key, R->payload, S->key, S->payload, r_l3_size, S->num_tuples[0]);
+                    run_clock[j] = run_time_tmp[1];
+                    run_time[j] = run_time_tmp[0];
+                }
+
+                delete[] S->key;
+                delete[] S->payload;
+                delete[] S->num_tuples;
+                delete[] R->key;
+                delete[] R->payload;
+                delete[] R->num_tuples;
+                delete S;
+                delete R;
+
+                // std::cout << "Run time: " << run_time[j] / CLOCKS_PER_SEC << " seconds" << std::endl;
+                double min_run_time = *std::min_element(run_time, run_time + 5);
+                double min_run_clock = *std::min_element(run_clock, run_clock + 5);
+
+                // 下面可要
+                float cachetimes=i*1.0/10;
+                metricstat="Times(ms)";
+                fprintf(fpcache,"%lf\t%lld\t%s\t%s\t%s\t%lf\t%s\n",cachetimes, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_time*1000,"L3");
+                metricstat="Throughput(GT/s)";
+                fprintf(fpcache,"%lf\t%d\t%s\t%s\t%s\t%lf\t%s\n",cachetimes, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), 1 / min_run_time,"L3");
+                metricstat="Cycles/Tuple";
+                fprintf(fpcache,"%lf\t%lld\t%s\t%s\t%s\t%lf\t%s\n",cachetimes, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_clock / s_size,"L3");
+            }
+        }
+        
+    }
     return 0;
 }
