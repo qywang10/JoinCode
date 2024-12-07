@@ -1,0 +1,2 @@
+col_num	s_size	time(s)	tuples/s	bandwidth(GB/s)
+6	1073741824	0.242592	4.122147	98.931539
