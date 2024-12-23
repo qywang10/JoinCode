@@ -36,7 +36,7 @@ enum TABLE_NAME
   date,
   lineorder
 };
-struct relation_t
+struct relation_t    // 128b=16B
 {
   int32_t *key;
   int32_t *payload;
@@ -59,14 +59,15 @@ struct create_arg_t
 };
 struct param_join_t
 {
+  //int help=0;    // help
   uint32_t nthreads;
   int r_size;
   int s_size;
   int groups;
-  int help=0;    // help
   int8_t numa_partition;
   int8_t col_num;
   int8_t test_bandwidth;
+  int8_t cachetest;
 };
 struct param_t
 {
