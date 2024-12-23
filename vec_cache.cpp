@@ -92,7 +92,7 @@ void parse_args(int argc, char **argv, param_join_t *cmd_params)
             break;
 
         case 'h':
-            printf("\parameter:\n \t1.numa_partition: for numa test\n \t2.test_bandwidth: for bandwidth test\n \t3.cachetest: for cache test\te.g.:1 2 3\n");
+            printf("\nparameter:\n \t1.numa_partition: for numa test\n \t2.test_bandwidth: for bandwidth test\n \t3.cachetest: for cache test\te.g.:1 2 3\n");
             // cmd_params->help = atoi(optarg);
             help_flag = true;
             break;
