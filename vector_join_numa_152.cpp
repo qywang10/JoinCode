@@ -892,7 +892,7 @@ int main(int argc, char **argv)
             metricstat = "Throughput(GT/s)";
             fprintf(fpans, "%d\t%d\t%s\t%s\t%s\t%lf\n", i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), 1 / min_run_time);
             metricstat = "Cycles/Tuple";
-            fprintf(fpans, "%d\t%lld\t%s\t%s\t%s\t%lf\n", i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_clock / s_size);
+            fprintf(fpans, "%d\t%lld\t%s\t%s\t%s\t%lf\n", i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), s_size / min_run_clock );
 
             /*
              * Metric:
@@ -1039,7 +1039,7 @@ int main(int argc, char **argv)
             metricstat = "Throughput(GT/s)";
             fprintf(fpans_numa, "%d\t%d\t%s\t%s\t%s\t%lf\n", i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), 1 / min_run_time);
             metricstat = "Cycles/Tuple";
-            fprintf(fpans_numa, "%d\t%d\t%s\t%s\t%s\t%lf\n", i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), min_run_clock / s_size);
+            fprintf(fpans_numa, "%d\t%d\t%s\t%s\t%s\t%lf\n", i, s_size, cpumodel.c_str(), numastat.c_str(), metricstat.c_str(), s_size / min_run_clock);
 
             fprintf(fp, "%d\t%d\t%lf\t%lf\t%lf\t%lf\n", cmd_params.r_size, s_size, min_run_time, 1 / min_run_time, min_run_clock, min_run_clock / s_size);
             if (i == 0)
